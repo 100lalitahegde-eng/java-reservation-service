@@ -4,20 +4,25 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
+import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 public final class Server {
-    public static void main(String[] args) throws IOException {
-        ReservationStore store = new ReservationStore(Clock.systemUTC());
-        store.stock("demo", 10);
+    public static void main(String[] args) throws IOException, SQLException {
+        String url = System.getenv("DATABASE_URL");
+        if (url == null || url.isBlank()) throw new IllegalStateException("DATABASE_URL is required");
+        DatabaseReservationStore store = new DatabaseReservationStore(url,
+                System.getenv().getOrDefault("DATABASE_USER", "postgres"),
+                System.getenv().getOrDefault("DATABASE_PASSWORD", ""));
+        store.stockIfAbsent("demo", 10);
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8080), 0);
         server.createContext("/inventory", e -> {
             if (!e.getRequestMethod().equals("GET")) { respond(e, 405, "method not allowed"); return; }
             String item = query(e).getOrDefault("item", "demo");
-            respond(e, 200, "available=" + store.available(item));
+            try { respond(e, 200, "available=" + store.available(item)); }
+            catch (SQLException ex) { respond(e, 503, "database unavailable"); }
         });
         server.createContext("/holds", e -> {
             try {
@@ -32,6 +37,7 @@ public final class Server {
                     respond(e, result.status(), result.message());
                 } else respond(e, 404, "not found");
             } catch (IllegalArgumentException ex) { respond(e, 400, "invalid request"); }
+            catch (SQLException ex) { respond(e, 503, "database unavailable"); }
         });
         server.start();
         System.out.println("Listening on http://127.0.0.1:8080");
