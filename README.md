@@ -10,6 +10,7 @@ Create a PostgreSQL database, then initialise it with `psql` and `schema.sql`. T
 export DATABASE_URL='jdbc:postgresql://localhost:5432/reservations'
 export DATABASE_USER='postgres'
 export DATABASE_PASSWORD='your-local-password'
+export API_TOKEN='replace-with-a-random-secret-of-at-least-32-characters'
 psql 'postgresql://postgres@localhost:5432/reservations' -f schema.sql
 mvn -q test-compile dependency:build-classpath -Dmdep.outputFile=classpath.txt
 java -cp "target/classes:$(cat classpath.txt)" Server
@@ -18,10 +19,10 @@ java -cp "target/classes:$(cat classpath.txt)" Server
 The server binds only to `127.0.0.1:8080` and seeds a `demo` item with capacity 10 if it does not exist. Example:
 
 ```sh
-curl 'http://127.0.0.1:8080/inventory?item=demo'
-curl -X POST -H 'Idempotency-Key: example-1' 'http://127.0.0.1:8080/holds?item=demo&quantity=2&seconds=60'
+curl -H "Authorization: Bearer $API_TOKEN" 'http://127.0.0.1:8080/inventory?item=demo'
+curl -X POST -H "Authorization: Bearer $API_TOKEN" -H 'Idempotency-Key: example-1' 'http://127.0.0.1:8080/holds?item=demo&quantity=2&seconds=60'
 # Substitute the returned hold ID:
-curl -X POST 'http://127.0.0.1:8080/holds/ID/confirm'
+curl -X POST -H "Authorization: Bearer $API_TOKEN" 'http://127.0.0.1:8080/holds/ID/confirm'
 ```
 
 ## Invariant and transaction design
@@ -32,17 +33,19 @@ The request key is retained permanently. Replaying an identical key, item, quant
 
 ## Verification
 
-GitHub Actions starts PostgreSQL and runs both test programs. `ReservationStoreTest` checks the original in-memory contention model. `DatabaseReservationStoreTest` creates competing holds through separate store instances, checks durable confirmation through a fresh instance, verifies expiry and replay, and races one key across different items. To run locally, use the Maven command above, then:
+GitHub Actions starts PostgreSQL and runs three test programs. `ReservationStoreTest` checks the original in-memory contention model. `DatabaseReservationStoreTest` creates competing holds through separate store instances, checks durable confirmation through a fresh instance, verifies expiry and replay, and races one key across different items. `ServerHttpTest` sends real loopback requests and checks unauthorised reads and writes, authorised hold/confirm/replay, and absence of write side effects after a 401. To run locally, use the Maven command above, then:
 
 ```sh
 java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ReservationStoreTest
 java -cp "target/classes:target/test-classes:$(cat classpath.txt)" DatabaseReservationStoreTest
+java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ServerHttpTest
 ```
 
 ## Boundaries
 
-- This is a portfolio prototype: no authentication, JSON API, rate limits, schema migration tool, connection pool, or deployment configuration. Keep it on localhost.
+- A single bearer token is required on every endpoint. The process refuses a missing or short token, never includes it in responses, and binds to loopback. This is a local demonstration, not a user identity or roles system. Do not expose this plain HTTP listener to a network; a real deployment needs TLS termination, secret management, token rotation, audit policy, and rate limiting.
+- There is no JSON API, schema migration tool, connection pool, or deployment configuration.
 - The fixed demo stock initializer never changes existing inventory. Real stock adjustments need their own guarded transaction.
 - Expired hold rows and request keys are retained for audit and idempotency; production needs an explicit retention policy.
-- The HTTP adapter has no integration tests yet. The database tests target the transaction boundary, not network behaviour.
+- HTTP integration tests cover the happy path and authentication failures, but not every malformed input or network failure.
 - No throughput claim is made. Benchmark with documented hardware, a fixed request mix, and latency percentiles before making performance claims.
