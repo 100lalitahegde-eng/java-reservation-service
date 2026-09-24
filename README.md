@@ -31,4 +31,4 @@ curl -X POST 'http://127.0.0.1:8080/holds/ID/confirm'
 - Stock changes are a setup method, not an authenticated API. Reducing stock below current commitments is not guarded; never call `stock` for live inventory changes.
 - No load numbers are claimed. Benchmark with a documented machine, warm-up, request mix, and percentile latencies.
 
-**Verification in this workspace:** source inspected; Java runtime present but `javac` absent, so compilation and tests are pending.
+**Verification:** GitHub Actions compiled the Java 17 source and passed `ReservationStoreTest`. The local workspace has a Java runtime but no `javac`, so the test was verified in CI.
