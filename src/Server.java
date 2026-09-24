@@ -1,35 +1,98 @@
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.stream.Collectors;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
 
 public final class Server {
-    public static void main(String[] args) throws IOException, SQLException {
+    public static void main(String[] args) throws IOException, SQLException, GeneralSecurityException {
         String url = System.getenv("DATABASE_URL");
         if (url == null || url.isBlank()) throw new IllegalStateException("DATABASE_URL is required");
-        String token = System.getenv("API_TOKEN");
+        String host = System.getenv().getOrDefault("LISTEN_HOST", "127.0.0.1");
+        String keystore = System.getenv("TLS_KEYSTORE_FILE");
+        boolean tls = keystore != null && !keystore.isBlank();
+        if (tls && (System.getenv("API_TOKEN_FILE") == null || System.getenv("DATABASE_PASSWORD_FILE") == null))
+            throw new IllegalStateException("TLS mode requires API_TOKEN_FILE and DATABASE_PASSWORD_FILE");
+        String token = secret("API_TOKEN_FILE", "API_TOKEN");
         DatabaseReservationStore store = new DatabaseReservationStore(url,
                 System.getenv().getOrDefault("DATABASE_USER", "postgres"),
-                System.getenv().getOrDefault("DATABASE_PASSWORD", ""));
+                secret("DATABASE_PASSWORD_FILE", "DATABASE_PASSWORD"));
         requireToken(token);
         store.stockIfAbsent("demo", 10);
-        HttpServer server = create(store, token, 8080);
+        HttpServer server = tls
+                ? createTls(store, token, host, 8080, Path.of(keystore),
+                        requiredPath("TLS_KEYSTORE_PASSWORD_FILE"))
+                : createPlain(store, token, host, 8080);
         server.start();
-        System.out.println("Listening on http://127.0.0.1:8080");
+        System.out.println("Listening on " + (tls ? "https" : "http") + "://" + host + ":8080");
     }
 
     /** Package-visible factory allows a real loopback HTTP test on an ephemeral port. */
     static HttpServer create(DatabaseReservationStore store, String token, int port) throws IOException {
+        return createPlain(store, token, "127.0.0.1", port);
+    }
+
+    static HttpServer createPlain(DatabaseReservationStore store, String token, String host, int port) throws IOException {
+        if (!InetAddress.getByName(host).isLoopbackAddress())
+            throw new IllegalStateException("Plain HTTP is restricted to loopback");
+        return configure(HttpServer.create(new InetSocketAddress(host, port), 0), store, token);
+    }
+
+    static HttpServer createTls(DatabaseReservationStore store, String token, String host, int port,
+                                Path keystore, Path passwordFile) throws IOException, GeneralSecurityException {
+        char[] password = Files.readString(passwordFile, StandardCharsets.UTF_8).strip().toCharArray();
+        try {
+            if (password.length == 0) throw new IllegalStateException("TLS keystore password is empty");
+            KeyStore keys = KeyStore.getInstance("PKCS12");
+            try (InputStream input = Files.newInputStream(keystore)) { keys.load(input, password); }
+            KeyManagerFactory managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            managers.init(keys, password);
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(managers.getKeyManagers(), null, null);
+            HttpsServer server = HttpsServer.create(new InetSocketAddress(host, port), 0);
+            server.setHttpsConfigurator(new HttpsConfigurator(context));
+            return configure(server, store, token);
+        } finally { Arrays.fill(password, '\0'); }
+    }
+
+    private static Path requiredPath(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) throw new IllegalStateException(name + " is required");
+        return Path.of(value);
+    }
+
+    private static String secret(String fileName, String inlineName) throws IOException {
+        String file = System.getenv(fileName), inline = System.getenv(inlineName);
+        if (file != null && inline != null) throw new IllegalStateException("Set only " + fileName + " or " + inlineName);
+        if (file != null) return readSecretFile(Path.of(file));
+        return inline == null ? "" : inline;
+    }
+
+    static String readSecretFile(Path path) throws IOException {
+        String value = Files.readString(path, StandardCharsets.UTF_8).strip();
+        if (value.isEmpty()) throw new IllegalStateException("secret file is empty");
+        return value;
+    }
+
+    private static HttpServer configure(HttpServer server, DatabaseReservationStore store, String token) {
         requireToken(token);
         byte[] expected = token.getBytes(StandardCharsets.UTF_8);
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/inventory", e -> {
             if (!authorised(e, expected)) { reject(e); return; }
             if (!e.getRequestURI().getPath().equals("/inventory")) { respond(e, 404, "not found"); return; }
