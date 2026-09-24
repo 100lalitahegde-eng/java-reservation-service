@@ -31,3 +31,4 @@ jobs:
       - run: mvn -B -q test-compile dependency:build-classpath -Dmdep.outputFile=classpath.txt
       - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ReservationStoreTest
       - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" DatabaseReservationStoreTest
+      - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ServerHttpTest
