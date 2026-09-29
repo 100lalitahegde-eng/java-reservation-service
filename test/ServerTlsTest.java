@@ -37,6 +37,9 @@ public final class ServerTlsTest {
 
             Path keyStore = Path.of(require("TLS_TEST_KEYSTORE"));
             Path passwordFile = Path.of(require("TLS_TEST_PASSWORD_FILE"));
+            String keystorePassword = Server.readSecretFile(passwordFile);
+            check(keystorePassword.startsWith(" ") && keystorePassword.endsWith(" "),
+                    "TLS test password includes significant surrounding spaces");
             HttpServer server = Server.createTls(store, token, "127.0.0.1", 0, keyStore, passwordFile);
             server.start();
             try {
