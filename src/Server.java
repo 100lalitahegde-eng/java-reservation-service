@@ -55,7 +55,7 @@ public final class Server {
 
     static HttpServer createTls(DatabaseReservationStore store, String token, String host, int port,
                                 Path keystore, Path passwordFile) throws IOException, GeneralSecurityException {
-        char[] password = Files.readString(passwordFile, StandardCharsets.UTF_8).strip().toCharArray();
+        char[] password = readSecretFile(passwordFile).toCharArray();
         try {
             if (password.length == 0) throw new IllegalStateException("TLS keystore password is empty");
             KeyStore keys = KeyStore.getInstance("PKCS12");
