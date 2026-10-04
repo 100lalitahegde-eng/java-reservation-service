@@ -6,6 +6,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.util.Map;
 import java.util.UUID;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
@@ -18,10 +19,17 @@ public final class ServerTlsTest {
                 System.getenv().getOrDefault("DATABASE_PASSWORD", ""));
         String item = "tls-" + UUID.randomUUID();
         store.stockIfAbsent(item, 1);
+        testConfiguration();
         Path tokenFile = Files.createTempFile("reservation-test-token", ".txt");
         try {
             Files.writeString(tokenFile, "tls-test-token-0123456789-0123456789\n");
             String token = Server.readSecretFile(tokenFile);
+            check(token.equals("tls-test-token-0123456789-0123456789"), "one final newline removed");
+            Files.writeString(tokenFile, " leading and trailing spaces \r\n");
+            check(Server.readSecretFile(tokenFile).equals(" leading and trailing spaces "), "secret spaces preserved");
+            Files.writeString(tokenFile, "");
+            expectRejected(() -> Server.readSecretFile(tokenFile));
+            Files.writeString(tokenFile, token + "\n");
             try {
                 Server.createPlain(store, token, "0.0.0.0", 0);
                 throw new AssertionError("plain HTTP bound to the network");
@@ -49,9 +57,49 @@ public final class ServerTlsTest {
                         HttpResponse.BodyHandlers.ofString());
                 check(accepted.statusCode() == 200 && accepted.body().equals("available=1"), "trusted TLS request accepted");
                 check(!accepted.body().contains(token), "secret not echoed");
+                URI hold = URI.create("https://127.0.0.1:" + server.getAddress().getPort()
+                        + "/holds?item=" + item + "&quantity=1&seconds=60");
+                var rejectedWrite = client.send(HttpRequest.newBuilder(hold)
+                        .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+                check(rejectedWrite.statusCode() == 401, "TLS hold without token rejected");
+                var unchanged = client.send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer " + token)
+                        .GET().build(), HttpResponse.BodyHandlers.ofString());
+                check(unchanged.body().equals("available=1"), "rejected TLS hold had no side effect");
+                var created = client.send(HttpRequest.newBuilder(hold).header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", "tls-key-" + UUID.randomUUID())
+                        .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+                check(created.statusCode() == 201 && created.body().startsWith("held id="), "TLS hold created");
+                String id = created.body().substring("held id=".length());
+                URI confirm = URI.create("https://127.0.0.1:" + server.getAddress().getPort()
+                        + "/holds/" + id + "/confirm");
+                var confirmed = client.send(HttpRequest.newBuilder(confirm).header("Authorization", "Bearer " + token)
+                        .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+                check(confirmed.statusCode() == 200, "TLS hold confirmed");
+                var finalRead = client.send(HttpRequest.newBuilder(uri).header("Authorization", "Bearer " + token)
+                        .GET().build(), HttpResponse.BodyHandlers.ofString());
+                check(finalRead.body().equals("available=0"), "confirmed TLS hold consumes capacity");
                 System.out.println("TLS integration tests passed");
             } finally { server.stop(0); }
         } finally { Files.deleteIfExists(tokenFile); }
+    }
+
+    private static void testConfiguration() throws Exception {
+        Map<String, String> valid = Map.of("API_TOKEN_FILE", "/test/token",
+                "DATABASE_PASSWORD_FILE", "/test/password");
+        Server.validateTlsSecrets(valid);
+        expectRejected(() -> Server.validateTlsSecrets(Map.of("DATABASE_PASSWORD_FILE", "/test/password")));
+        expectRejected(() -> Server.validateTlsSecrets(Map.of("API_TOKEN_FILE", "/test/token")));
+        expectRejected(() -> Server.validateTlsSecrets(Map.of("API_TOKEN_FILE", "/test/token",
+                "DATABASE_PASSWORD_FILE", "/test/password", "API_TOKEN", "inline")));
+        expectRejected(() -> Server.validateTlsSecrets(Map.of("API_TOKEN_FILE", "/test/token",
+                "DATABASE_PASSWORD_FILE", "/test/password", "DATABASE_PASSWORD", "inline")));
+    }
+
+    private interface CheckedAction { void run() throws Exception; }
+    private static void expectRejected(CheckedAction action) throws Exception {
+        try { action.run(); }
+        catch (IllegalStateException expected) { return; }
+        throw new AssertionError("invalid secret configuration accepted");
     }
 
     private static String require(String name) {

@@ -27,8 +27,7 @@ public final class Server {
         String host = System.getenv().getOrDefault("LISTEN_HOST", "127.0.0.1");
         String keystore = System.getenv("TLS_KEYSTORE_FILE");
         boolean tls = keystore != null && !keystore.isBlank();
-        if (tls && (System.getenv("API_TOKEN_FILE") == null || System.getenv("DATABASE_PASSWORD_FILE") == null))
-            throw new IllegalStateException("TLS mode requires API_TOKEN_FILE and DATABASE_PASSWORD_FILE");
+        if (tls) validateTlsSecrets(System.getenv());
         String token = secret("API_TOKEN_FILE", "API_TOKEN");
         DatabaseReservationStore store = new DatabaseReservationStore(url,
                 System.getenv().getOrDefault("DATABASE_USER", "postgres"),
@@ -56,7 +55,7 @@ public final class Server {
 
     static HttpServer createTls(DatabaseReservationStore store, String token, String host, int port,
                                 Path keystore, Path passwordFile) throws IOException, GeneralSecurityException {
-        char[] password = Files.readString(passwordFile, StandardCharsets.UTF_8).strip().toCharArray();
+        char[] password = readSecretFile(passwordFile).toCharArray();
         try {
             if (password.length == 0) throw new IllegalStateException("TLS keystore password is empty");
             KeyStore keys = KeyStore.getInstance("PKCS12");
@@ -69,6 +68,16 @@ public final class Server {
             server.setHttpsConfigurator(new HttpsConfigurator(context));
             return configure(server, store, token);
         } finally { Arrays.fill(password, '\0'); }
+    }
+
+    static void validateTlsSecrets(Map<String, String> env) {
+        for (String name : new String[] {"API_TOKEN", "DATABASE_PASSWORD"}) {
+            String file = env.get(name + "_FILE");
+            if (file == null || file.isBlank())
+                throw new IllegalStateException("TLS mode requires " + name + "_FILE");
+            if (env.containsKey(name))
+                throw new IllegalStateException("Set only " + name + "_FILE or " + name);
+        }
     }
 
     private static Path requiredPath(String name) {
@@ -85,7 +94,9 @@ public final class Server {
     }
 
     static String readSecretFile(Path path) throws IOException {
-        String value = Files.readString(path, StandardCharsets.UTF_8).strip();
+        String value = Files.readString(path, StandardCharsets.UTF_8);
+        if (value.endsWith("\r\n")) value = value.substring(0, value.length() - 2);
+        else if (value.endsWith("\n")) value = value.substring(0, value.length() - 1);
         if (value.isEmpty()) throw new IllegalStateException("secret file is empty");
         return value;
     }
