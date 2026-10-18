@@ -28,18 +28,4 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
-      - run: mvn -B -q test-compile dependency:build-classpath -Dmdep.outputFile=classpath.txt
-      - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ReservationStoreTest
-      - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" DatabaseReservationStoreTest
-      - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ServerHttpTest
-      - name: Generate disposable TLS test certificate
-        run: |
-          printf '%s\n' ' test-password-for-ci-only ' > /tmp/reservation-tls-password
-          keytool -genkeypair -alias test -keyalg RSA -keysize 2048 -validity 1 -dname 'CN=localhost' -ext 'SAN=IP:127.0.0.1,DNS:localhost' -storetype PKCS12 -keystore /tmp/reservation-test.p12 -storepass ' test-password-for-ci-only ' -keypass ' test-password-for-ci-only ' -noprompt
-          keytool -exportcert -alias test -keystore /tmp/reservation-test.p12 -storepass ' test-password-for-ci-only ' -rfc -file /tmp/reservation-test.pem
-          keytool -importcert -alias test -file /tmp/reservation-test.pem -keystore /tmp/reservation-trust.p12 -storetype PKCS12 -storepass ' test-password-for-ci-only ' -noprompt
-      - run: java -cp "target/classes:target/test-classes:$(cat classpath.txt)" ServerTlsTest
-        env:
-          TLS_TEST_KEYSTORE: /tmp/reservation-test.p12
-          TLS_TEST_PASSWORD_FILE: /tmp/reservation-tls-password
-          TLS_TEST_TRUSTSTORE: /tmp/reservation-trust.p12
+      - run: mvn -B test
