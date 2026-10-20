@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -65,6 +66,38 @@ class ReservationStoreTest {
         assertEquals(200, replay.status());
         assertEquals(created.hold().id(), replay.hold().id());
         assertEquals(409, store.hold("seat", 2, 60, "same-key").status());
+    }
+
+    @Test
+    void replayAfterExpiryReturnsTheOriginalHold() {
+        AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-01-01T00:00:00Z"));
+        ReservationStore store = new ReservationStore(new Clock() {
+            @Override
+            public ZoneId getZone() {
+                return ZoneOffset.UTC;
+            }
+
+            @Override
+            public Clock withZone(ZoneId zone) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public Instant instant() {
+                return now.get();
+            }
+        });
+        store.stock("seat", 1);
+        ReservationStore.Result created = store.hold("seat", 1, 60, "late-key");
+        assertEquals(201, created.status());
+        now.set(now.get().plusSeconds(61));
+        assertEquals(1, store.available("seat"), "expired hold releases capacity");
+        assertEquals(404, store.confirm(created.hold().id()).status(), "expired hold cannot be confirmed");
+        ReservationStore.Result replay = store.hold("seat", 1, 60, "late-key");
+        assertEquals(200, replay.status());
+        assertEquals(created.hold(), replay.hold(), "replay returns the original expired hold");
+        assertEquals(409, store.hold("seat", 1, 120, "late-key").status(), "different TTL is a conflict");
+        assertEquals(1, store.available("seat"), "replay does not take capacity");
     }
 
     @Test

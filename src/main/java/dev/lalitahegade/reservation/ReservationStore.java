@@ -3,6 +3,7 @@ package dev.lalitahegade.reservation;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
 
@@ -12,9 +13,13 @@ public final class ReservationStore {
 
     public record Result(int status, String message, Hold hold) {}
 
+    private record Request(String item, int quantity, long seconds, String holdId) {}
+
     private final Map<String, Integer> capacities = new HashMap<>();
     private final Map<String, Hold> holds = new HashMap<>();
-    private final Map<String, String> requests = new HashMap<>();
+    /** Expired holds stay here so a replayed request id still returns its original hold. */
+    private final Map<String, Hold> expired = new HashMap<>();
+    private final Map<String, Request> requests = new HashMap<>();
     private final Clock clock;
 
     public ReservationStore(Clock clock) {
@@ -34,13 +39,15 @@ public final class ReservationStore {
                 || quantity <= 0 || seconds <= 0 || seconds > 3600) {
             return new Result(400, "invalid request", null);
         }
-        String existing = requests.get(requestId);
+        Request existing = requests.get(requestId);
         if (existing != null) {
-            Hold prior = holds.get(existing);
-            if (prior != null && prior.item().equals(item) && prior.quantity() == quantity) {
-                return new Result(200, "replayed", prior);
+            if (!existing.item().equals(item) || existing.quantity() != quantity || existing.seconds() != seconds) {
+                return new Result(409, "request id already used", null);
             }
-            return new Result(409, "request id already used", null);
+            Hold prior = holds.containsKey(existing.holdId())
+                    ? holds.get(existing.holdId())
+                    : expired.get(existing.holdId());
+            return new Result(200, "replayed", prior);
         }
         if (!capacities.containsKey(item)) {
             return new Result(404, "unknown item", null);
@@ -51,7 +58,7 @@ public final class ReservationStore {
         Hold created = new Hold(
                 UUID.randomUUID().toString(), item, quantity, clock.instant().plusSeconds(seconds), false);
         holds.put(created.id(), created);
-        requests.put(requestId, created.id());
+        requests.put(requestId, new Request(item, quantity, seconds, created.id()));
         return new Result(201, "held", created);
     }
 
@@ -80,6 +87,13 @@ public final class ReservationStore {
 
     private void expire() {
         Instant now = clock.instant();
-        holds.values().removeIf(hold -> !hold.confirmed() && !hold.expiresAt().isAfter(now));
+        Iterator<Hold> active = holds.values().iterator();
+        while (active.hasNext()) {
+            Hold hold = active.next();
+            if (!hold.confirmed() && !hold.expiresAt().isAfter(now)) {
+                expired.put(hold.id(), hold);
+                active.remove();
+            }
+        }
     }
 }

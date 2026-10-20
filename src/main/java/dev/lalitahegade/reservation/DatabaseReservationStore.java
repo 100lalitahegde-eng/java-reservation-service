@@ -30,7 +30,7 @@ public final class DatabaseReservationStore implements AutoCloseable {
         return dataSource.getConnection();
     }
 
-    /** Demo setup only: never changes an existing item's capacity. */
+    /** Seeds an item for local runs; never changes an existing item's capacity. */
     public void stockIfAbsent(String item, int capacity) throws SQLException {
         if (item == null || item.isBlank() || capacity < 0) {
             throw new IllegalArgumentException();
